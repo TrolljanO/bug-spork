@@ -1,14 +1,19 @@
 from flask import Flask
-from app.routes import main
-
+from app.config import Config
+from flask_migrate import Migrate
+from app.models import db
 
 def create_app():
     app = Flask(__name__)
+    app.config.from_object(Config)
 
-    # Configurações do app
-    app.config.from_object('app.config.Config')
+    db.init_app(app)
 
-    # Registrar rotas
+    # Inicializar Flask-Migrate
+    migrate = Migrate(app, db)
+
+
+    from app.routes import main
     app.register_blueprint(main)
 
     return app
