@@ -21,7 +21,7 @@ def get_vendedores():
     resultado = [
         {
             "id": v.id,
-            "nome": v.user.nome,  # Assumindo que há uma relação com o modelo User
+            "nome": v.user.username,  # Assumindo que o modelo User tem a coluna `username`
             "indicacoes": v.indicacoes,
             "vendas_fechadas": v.vendas_fechadas,
             "vendas_concluidas": v.vendas_concluidas,
@@ -56,8 +56,24 @@ def create_vendedor():
     if not data.get('user_id'):
         return json_response(message="ID de usuário é obrigatório", status=400)
 
+    # Se o afiliado for indicado por um vendedor existente (afiliado_id)
+    afiliado_superior = Vendedor.query.get(data.get('afiliado_id'))
+
+    if afiliado_superior:
+        # Buscar todos os afiliados já indicados pelo afiliado superior
+        count_afiliados = Vendedor.query.filter_by(afiliado_id=afiliado_superior.id).count()
+
+        # Criar o id_encadeado baseado no id_encadeado do afiliado superior
+        novo_id_encadeado = f"{afiliado_superior.id_encadeado}-{count_afiliados + 1}"
+    else:
+        # Caso seja o primeiro vendedor, o id_encadeado será "1", ou seja, o primeiro na hierarquia
+        novo_id_encadeado = f"1-{Vendedor.query.filter_by(afiliado_id=None).count() + 1}"
+
+    # Criar o novo vendedor/afiliado
     novo_vendedor = Vendedor(
         user_id=data['user_id'],
+        afiliado_id=data.get('afiliado_id'),  # Se for afiliado de alguém
+        id_encadeado=novo_id_encadeado,
         indicacoes=0,
         vendas_fechadas=0,
         vendas_concluidas=0,
@@ -66,7 +82,9 @@ def create_vendedor():
     )
     db.session.add(novo_vendedor)
     db.session.commit()
-    return json_response(data={"id": novo_vendedor.id}, message="Vendedor criado com sucesso", status=201)
+
+    return json_response(data={"id": novo_vendedor.id, "id_encadeado": novo_vendedor.id_encadeado}, message="Vendedor criado com sucesso", status=201)
+
 
 
 # --------------------- ROTAS DOS CLIENTES -----------------------
@@ -173,4 +191,96 @@ def create_venda():
     )
     db.session.add(nova_venda)
     db.session.commit()
+
+    # Após a criação da venda, distribuir comissões
+    distribuir_comissao(nova_venda.id)
+
     return json_response(data={"id": nova_venda.id}, message="Venda criada com sucesso", status=201)
+
+
+# --------------------- ROTAS DE COMISSÕES -----------------------
+
+@main.route('/comissoes', methods=['POST'])
+def create_comissao():
+    data = request.json
+    if not data.get('vendedor_id') or not data.get('afiliado_id') or not data.get('valor_comissao'):
+        return json_response(message="Dados insuficientes para registrar a comissão", status=400)
+
+    nova_comissao = Comissao(
+        vendedor_id=data['vendedor_id'],
+        afiliado_id=data['afiliado_id'],
+        valor_comissao=data['valor_comissao'],
+        nivel=data['nivel'],
+        status="Pendente"
+    )
+    db.session.add(nova_comissao)
+    db.session.commit()
+    return json_response(data={"id": nova_comissao.id}, message="Comissão criada com sucesso", status=201)
+
+@main.route('/comissoes/<int:vendedor_id>', methods=['GET'])
+def get_comissoes(vendedor_id):
+    comissoes = Comissao.query.filter_by(vendedor_id=vendedor_id).all()
+    resultado = [
+        {
+            "id": c.id,
+            "vendedor_id": c.vendedor_id,
+            "afiliado_id": c.afiliado_id,
+            "valor_comissao": str(c.valor_comissao),
+            "nivel": c.nivel,
+            "data_comissao": c.data_comissao.strftime("%Y-%m-%d"),
+            "status": c.status
+        } for c in comissoes
+    ]
+    return json_response(data=resultado)
+
+
+def obter_vendedor_superior(vendedor, nivel_atual):
+    """
+    Função que busca o vendedor superior em um nível específico.
+    Ela deve navegar pela hierarquia de vendedores.
+    """
+    # Aqui você pode implementar a lógica de hierarquia, por exemplo:
+    # 1. Obter o afiliado que cadastrou o vendedor original (pai)
+    # 2. Verificar se esse afiliado está no nível correto
+    # Retornar o vendedor superior correspondente.
+
+    # Exemplo simples para seguir a hierarquia, você pode ajustar conforme necessário.
+    afiliado_superior = Vendedor.query.filter_by(id=vendedor.afiliado_id).first()  # Verifica se há um afiliado
+    return afiliado_superior if afiliado_superior and afiliado_superior.nivel == nivel_atual else None
+
+
+def distribuir_comissao(venda_id):
+    """
+    Função para distribuir comissões para o vendedor e níveis superiores, com base nas regras de comissão.
+    """
+    # Recupera a venda e o vendedor
+    venda = Venda.query.get(venda_id)
+    vendedor = Vendedor.query.get(venda.vendedor_id)
+
+    # Nível 1 (vendedor que fez a venda)
+    comissao = 500
+    nova_comissao = Comissao(
+        vendedor_id=venda.vendedor_id,
+        afiliado_id=venda.cliente_id,  # Aqui seria o afiliado que fez a venda
+        valor_comissao=comissao,
+        nivel=1,
+        status="Pendente"
+    )
+    db.session.add(nova_comissao)
+
+    # Distribuir comissões para os níveis superiores
+    # Exemplo para os níveis 2, 3, 4 e 5:
+    for nivel in range(2, 6):
+        vendedor_superior = obter_vendedor_superior(vendedor, nivel)
+        if vendedor_superior:
+            comissao_nivel = 500 - (nivel - 1) * 50  # A comissão diminui 50 por nível
+            nova_comissao = Comissao(
+                vendedor_id=vendedor_superior.id,
+                afiliado_id=venda.cliente_id,
+                valor_comissao=comissao_nivel,
+                nivel=nivel,
+                status="Pendente"
+            )
+            db.session.add(nova_comissao)
+
+    db.session.commit()
